@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const EventEmitter = require('events');
 const config = require('../config');
 const logger = require('../utils/logger');
-const redisService = require('../services/redisService');
+const cacheService = require('../services/cacheService'); // 통합 캐시 서비스 사용
 
 class TradingEngine extends EventEmitter {
   constructor() {
@@ -45,8 +45,8 @@ class TradingEngine extends EventEmitter {
     this.positions.set(userId, []);
     this.orders.set(userId, []);
 
-    // Redis에 저장 (캐싱)
-    await redisService.hset('users', userId, user);
+    // 캐시에 저장
+    await cacheService.hset('users', userId, user);
 
     logger.info(`User initialized: ${userId}`);
     return user;
@@ -444,6 +444,20 @@ class TradingEngine extends EventEmitter {
 
     const wins = user.tradeHistory.filter(t => t.realizedPnl > 0).length;
     return (wins / user.tradeHistory.length) * 100;
+  }
+
+  // 현재 가격 조회 (캐시 활용)
+  async getCurrentPrice() {
+    try {
+      const cachedPrice = await cacheService.get('current_price');
+      if (cachedPrice) return parseFloat(cachedPrice);
+      
+      // 캐시에 가격이 없으면 현재 가격 사용
+      return this.currentPrice || 50000;
+    } catch (error) {
+      logger.error('Error fetching price:', error);
+      return this.currentPrice || 50000;
+    }
   }
 }
 

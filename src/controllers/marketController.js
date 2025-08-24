@@ -1,6 +1,6 @@
 // controllers/marketController.js - 시장 데이터 API 컨트롤러
 const bybitService = require('../services/bybitService');
-const redisService = require('../services/redisService');
+const cacheService = require('../services/cacheService'); // 통합 캐시 서비스 사용
 const logger = require('../utils/logger');
 const config = require('../config');
 
@@ -10,9 +10,9 @@ class MarketController {
     try {
       const { symbol = 'BTCUSDT' } = req.query;
       
-      // Redis 캐시 확인
+      // 캐시 확인
       const cacheKey = `ticker:${symbol}`;
-      const cached = await redisService.get(cacheKey);
+      const cached = await cacheService.get(cacheKey);
       
       if (cached) {
         return res.json({
@@ -26,7 +26,7 @@ class MarketController {
       const ticker = await bybitService.getTicker(symbol);
       
       // 캐싱
-      await redisService.set(cacheKey, ticker, config.redis.ttl.price);
+      await cacheService.set(cacheKey, ticker, config.cache.ttl.ticker);
       
       res.json({
         success: true,
@@ -51,9 +51,9 @@ class MarketController {
         limit = 200 
       } = req.query;
       
-      // Redis 캐시 확인
+      // 캐시 확인
       const cacheKey = `kline:${symbol}:${interval}`;
-      const cached = await redisService.get(cacheKey);
+      const cached = await cacheService.get(cacheKey);
       
       if (cached) {
         return res.json({
@@ -67,7 +67,7 @@ class MarketController {
       const kline = await bybitService.getKline(symbol, interval, limit);
       
       // 캐싱
-      await redisService.set(cacheKey, kline, config.redis.ttl.kline);
+      await cacheService.set(cacheKey, kline, config.cache.ttl.kline);
       
       res.json({
         success: true,
@@ -91,9 +91,9 @@ class MarketController {
         limit = 50 
       } = req.query;
       
-      // Redis 캐시 확인
+      // 캐시 확인
       const cacheKey = `orderbook:${symbol}`;
-      const cached = await redisService.get(cacheKey);
+      const cached = await cacheService.get(cacheKey);
       
       if (cached) {
         return res.json({
@@ -107,7 +107,7 @@ class MarketController {
       const orderbook = await bybitService.getOrderbook(symbol, limit);
       
       // 캐싱
-      await redisService.set(cacheKey, orderbook, config.redis.ttl.orderbook);
+      await cacheService.set(cacheKey, orderbook, config.cache.ttl.orderbook);
       
       res.json({
         success: true,
@@ -152,6 +152,18 @@ class MarketController {
     try {
       const { symbol = 'BTCUSDT' } = req.query;
       
+      // 캐시 확인
+      const cacheKey = `stats24h:${symbol}`;
+      const cached = await cacheService.get(cacheKey);
+      
+      if (cached) {
+        return res.json({
+          success: true,
+          data: cached,
+          cached: true
+        });
+      }
+      
       const ticker = await bybitService.getTicker(symbol);
       
       const stats = {
@@ -165,9 +177,13 @@ class MarketController {
         prevPrice24h: ticker.prevPrice24h
       };
       
+      // 캐싱 (30초)
+      await cacheService.set(cacheKey, stats, 30);
+      
       res.json({
         success: true,
-        data: stats
+        data: stats,
+        cached: false
       });
     } catch (error) {
       logger.error('Error fetching 24hr stats:', error);

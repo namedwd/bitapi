@@ -1,4 +1,4 @@
-// config/index.js - 중앙 설정 관리
+// config/index.js - 중앙 설정 관리 (Redis 옵션화)
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -18,17 +18,21 @@ module.exports = {
     apiSecret: process.env.BYBIT_API_SECRET || ''
   },
 
-  // Redis 설정
-  redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT) || 6379,
-    password: process.env.REDIS_PASSWORD || '',
-    db: parseInt(process.env.REDIS_DB) || 0,
-    keyPrefix: 'bybit:mock:',
+  // 캐시 설정 (Redis 옵션)
+  cache: {
+    useRedis: process.env.USE_REDIS === 'true', // 기본값: false
+    redis: {
+      host: process.env.REDIS_HOST || 'localhost',
+      port: parseInt(process.env.REDIS_PORT) || 6379,
+      password: process.env.REDIS_PASSWORD || '',
+      db: parseInt(process.env.REDIS_DB) || 0,
+      keyPrefix: 'bybit:mock:'
+    },
     ttl: {
-      price: 10,
-      orderbook: 5,
-      kline: 60
+      price: 10,      // 가격 캐시 10초
+      orderbook: 5,   // 호가창 캐시 5초
+      kline: 60,      // K선 캐시 60초
+      ticker: 10      // 티커 캐시 10초
     }
   },
 
@@ -49,7 +53,8 @@ module.exports = {
     reconnectDelay: 5000, // 5초
     maxReconnectAttempts: 10,
     messageRateLimit: 100, // 초당 최대 메시지 수
-    connectionLimit: 1000 // 최대 동시 연결 수
+    connectionLimit: 1000, // 최대 동시 연결 수
+    broadcastInterval: 1000 // 브로드캐스트 간격 (1초)
   },
 
   // 로깅 설정

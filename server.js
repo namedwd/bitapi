@@ -1,4 +1,4 @@
-// server.js - 메인 서버 파일 (확장성 있는 구조)
+// server.js - 메인 서버 파일 (Redis 옵션, 500명 최적화)
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -11,8 +11,8 @@ const path = require('path');
 const config = require('./src/config');
 const logger = require('./src/utils/logger');
 
-// 서비스
-const redisService = require('./src/services/redisService');
+// 서비스 (캐시 서비스로 통합)
+const cacheService = require('./src/services/cacheService');
 const bybitService = require('./src/services/bybitService');
 
 // 모델 및 매니저
@@ -56,14 +56,23 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ===== API 라우트 =====
 
 // 헬스 체크
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const stats = cacheService.getStats ? cacheService.getStats() : {};
+  
   res.json({
     status: 'OK',
     timestamp: Date.now(),
     uptime: process.uptime(),
     memory: process.memoryUsage(),
-    redis: redisService.isConnected,
-    bybit: bybitService.isConnected
+    cache: {
+      type: config.cache.useRedis ? 'redis' : 'memory',
+      stats: stats
+    },
+    bybit: bybitService.isConnected,
+    websocket: {
+      connections: wsManager.clients.size,
+      maxConnections: config.websocket.connectionLimit
+    }
   });
 });
 
@@ -219,37 +228,75 @@ app.use((err, req, res, next) => {
   });
 });
 
+// ===== 최적화된 브로드캐스트 시스템 =====
+
+// 브로드캐스트 큐 (500명 동시 처리 최적화)
+const broadcastQueue = [];
+let isBroadcasting = false;
+
+// 효율적인 브로드캐스트 처리
+async function processBroadcastQueue() {
+  if (isBroadcasting || broadcastQueue.length === 0) return;
+  
+  isBroadcasting = true;
+  const batch = broadcastQueue.splice(0, 10); // 한 번에 10개씩 처리
+  
+  for (const item of batch) {
+    wsManager.broadcast(item.channel, item.data);
+  }
+  
+  isBroadcasting = false;
+  
+  // 다음 배치 처리
+  if (broadcastQueue.length > 0) {
+    setTimeout(processBroadcastQueue, 10);
+  }
+}
+
+// 브로드캐스트 큐에 추가
+function queueBroadcast(channel, data) {
+  broadcastQueue.push({ channel, data });
+  processBroadcastQueue();
+}
+
 // ===== 이벤트 핸들러 설정 =====
 
 // Bybit 서비스 이벤트
 bybitService.on('market_data', (data) => {
-  // 시장 데이터를 구독자에게 브로드캐스트
-  wsManager.broadcast('market', data);
+  // 시장 데이터를 큐에 추가 (바로 브로드캐스트하지 않음)
+  queueBroadcast('market', data);
 });
 
-bybitService.on('tickers.BTCUSDT', (data) => {
+bybitService.on('tickers.BTCUSDT', async (data) => {
   if (data && data.length > 0) {
-    // 현재 가격 업데이트
-    tradingEngine.updateCurrentPrice(data[0].lastPrice);
+    const tickerData = data[0];
     
-    // 가격 정보 브로드캐스트
-    wsManager.broadcast('ticker', {
+    // 현재 가격 업데이트
+    tradingEngine.updateCurrentPrice(tickerData.lastPrice);
+    
+    // 캐시에 저장
+    await cacheService.set('current_price', tickerData.lastPrice, config.cache.ttl.price);
+    
+    // 가격 정보 브로드캐스트 (큐 사용)
+    queueBroadcast('ticker', {
       symbol: 'BTCUSDT',
-      price: data[0].lastPrice,
-      change24h: data[0].price24hPcnt,
-      volume24h: data[0].volume24h
+      price: tickerData.lastPrice,
+      change24h: tickerData.price24hPcnt * 100,
+      volume24h: tickerData.volume24h
     });
+    
+    logger.debug(`Price updated: $${tickerData.lastPrice}`);
   }
 });
 
 bybitService.on('orderbook.50.BTCUSDT', (data) => {
-  // 오더북 브로드캐스트
-  wsManager.broadcast('orderbook', data);
+  // 오더북 브로드캐스트 (큐 사용)
+  queueBroadcast('orderbook', data);
 });
 
 bybitService.on('publicTrade.BTCUSDT', (data) => {
-  // 실시간 거래 브로드캐스트
-  wsManager.broadcast('trades', data);
+  // 실시간 거래 브로드캐스트 (큐 사용)
+  queueBroadcast('trades', data);
 });
 
 // 거래 엔진 이벤트
@@ -295,7 +342,7 @@ tradingEngine.on('liquidation', (data) => {
   });
   
   // 강제 청산 알림을 모든 사용자에게 브로드캐스트 (익명화)
-  wsManager.broadcast('liquidations', {
+  queueBroadcast('liquidations', {
     symbol: 'BTCUSDT',
     side: data.side,
     qty: data.qty,
@@ -308,8 +355,13 @@ tradingEngine.on('liquidation', (data) => {
 
 async function startServer() {
   try {
-    // Redis 연결
-    await redisService.connect();
+    // 캐시 서비스 초기화 (Redis 연결 시도, 실패 시 메모리 캐시 사용)
+    if (config.cache.useRedis && cacheService.connect) {
+      const redisConnected = await cacheService.connect();
+      if (!redisConnected) {
+        logger.warn('Redis connection failed, using memory cache as fallback');
+      }
+    }
     
     // Bybit WebSocket 연결
     bybitService.connect();
@@ -327,15 +379,36 @@ async function startServer() {
         'kline.240.BTCUSDT',
         'kline.D.BTCUSDT'
       ]);
+      logger.info('Subscribed to Bybit market data channels');
     }, 2000);
 
     // 서버 시작
     const PORT = config.server.port;
     server.listen(PORT, () => {
-      logger.info(`Server is running on port ${PORT}`);
-      logger.info(`Environment: ${config.server.env}`);
-      logger.info(`WebSocket server is ready`);
+      logger.info(`
+========================================
+🚀 Server is running on port ${PORT}
+📊 Environment: ${config.server.env}
+💾 Cache: ${config.cache.useRedis ? 'Redis' : 'Memory'}
+🔌 WebSocket: Ready for connections
+🎯 Max connections: ${config.websocket.connectionLimit}
+========================================
+      `);
     });
+
+    // 서버 상태 모니터링 (1분마다)
+    setInterval(() => {
+      const memUsage = process.memoryUsage();
+      const connections = wsManager.clients.size;
+      
+      logger.info(`Server Stats - Connections: ${connections}, Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`);
+      
+      // 캐시 통계 (메모리 캐시 사용 시)
+      if (!config.cache.useRedis && cacheService.getStats) {
+        const cacheStats = cacheService.getStats();
+        logger.debug(`Cache Stats:`, cacheStats);
+      }
+    }, 60000);
 
   } catch (error) {
     logger.error('Failed to start server:', error);
@@ -360,8 +433,12 @@ async function gracefulShutdown(signal) {
     // Bybit 서비스 종료
     bybitService.disconnect();
     
-    // Redis 연결 종료
-    await redisService.disconnect();
+    // 캐시 정리
+    if (cacheService.clear) {
+      cacheService.clear();
+    } else if (cacheService.disconnect) {
+      await cacheService.disconnect();
+    }
     
     logger.info('All connections closed');
     process.exit(0);
