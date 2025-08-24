@@ -626,7 +626,7 @@
         // K선 데이터 로드
         async function loadKlineData(interval = '1') {
             try {
-                const response = await fetch(`/api/market/kline?interval=${interval}&limit=200`);
+                const response = await fetch(`http://${window.location.host}/api/market/kline?interval=${interval}&limit=200`);
                 const data = await response.json();
                 
                 if (data.success && data.data) {
@@ -647,8 +647,8 @@
 
         // WebSocket 연결
         function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}`;
+            // HTTP/WS만 사용 (HTTPS 비활성화)
+            const wsUrl = `ws://${window.location.host}`;
             
             ws = new WebSocket(wsUrl);
 
