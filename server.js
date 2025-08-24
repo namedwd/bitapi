@@ -33,7 +33,22 @@ const tradingEngine = new TradingEngine();
 const wsManager = new WebSocketManager(server, tradingEngine);
 
 // 미들웨어 설정
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.jsdelivr.net"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "ws:", "wss:"],
+      fontSrc: ["'self'", "https:", "data:"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"]
+    }
+  },
+  crossOriginOpenerPolicy: false
+}));
 app.use(compression());
 app.use(cors({
   origin: config.server.corsOrigins,
